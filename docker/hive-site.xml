@@ -1,0 +1,46 @@
+<!-- ==========================================================================
+     AquaKwal Hive configuration — overrides for the Docker Hive image.
+     Placed into /etc/hadoop/conf/hive-site.xml in the namenode container.
+     ========================================================================== -->
+<configuration>
+    <property>
+        <name>javax.jdo.option.ConnectionURL</name>
+        <value>jdbc:derby:;databaseName=/tmp/hive-metastore-db;create=true</value>
+    </property>
+    <property>
+        <name>javax.jdo.option.DriverName</name>
+        <value>org.apache.derby.jdbc.EmbeddedDriver</value>
+    </property>
+    <property>
+        <name>hive.metastore.warehouse.dir</name>
+        <value>/user/hive/warehouse</value>
+    </property>
+    <property>
+        <name>hive.metastore.warehouse.ttl</name>
+        <value>-1</value>
+    </property>
+    <property>
+        <name>fs.defaultFS</name>
+        <value>hdfs://namenode:9000</value>
+    </property>
+    <property>
+        <name>hive.metastore.warehouse.dir</name>
+        <value>/user/hive/warehouse</value>
+    </property>
+    <property>
+        <name>hive.exec.scratchdir</name>
+        <value>/tmp/hive-scratch</value>
+    </property>
+    <property>
+        <name>hive.mock.writexn.stream</name>
+        <value>false</value>
+    </property>
+    <property>
+        <name>hive.exec.orc.default.compress</name>
+        <value>SNAPPY</value>
+    </property>
+    <property>
+        <name>hive.cli.print.header</name>
+        <value>true</value>
+    </property>
+</configuration>
