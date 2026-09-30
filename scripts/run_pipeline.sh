@@ -1,28 +1,31 @@
 #!/bin/bash
 # ============================================================================
-# AquaKwal End-to-End Pipeline Runner
+# AquaKwal: End-to-End Pipeline Runner
 # Runs the full Pig -> Hive -> Spark ML pipeline inside the Docker cluster.
-# Assumes: docker-compose up -d has been executed and services are healthy.
+# Assumes: docker compose up -d has been executed and services are healthy.
 # ============================================================================
 
 set -e
 
 echo "=========================================================="
 echo "  AquaKwal Pipeline: Pig ETL -> Hive DDL -> Spark MLlib"
+echo "  Dataset: Indian_water_data_pipe.csv"
 echo "=========================================================="
 
 # ---------------------------------------------------------------------------
-# 0. Wait for HDFS to be ready (max 60 s)
+# 0. Wait for HDFS to be ready (max 90 s)
 # ---------------------------------------------------------------------------
-echo "[0] Waiting for HDFS namenode..."
+echo "[0] Waiting for HDFS namenode + datanode..."
 docker exec namenode bash -c '
   for i in $(seq 1 30); do
-    if hdfs dfsadmin -report 2>/dev/null | grep -q "Live datanodes"; then
-      echo "HDFS is up."
+    report=$(hdfs dfsadmin -report 2>/dev/null)
+    live=$(echo "$report" | grep "Live datanodes" | grep -oP "\d+")
+    if [ "$live" = "1" ] 2>/dev/null || [ "$live" = "2" ] 2>/dev/null; then
+      echo "HDFS is up (datanodes: $live)."
       exit 0
     fi
     echo "  waiting... ($i)"
-    sleep 2
+    sleep 3
   done
   echo "ERROR: HDFS not ready"
   exit 1
@@ -32,12 +35,14 @@ docker exec namenode bash -c '
 # 1. Upload raw data to HDFS
 # ---------------------------------------------------------------------------
 echo "[1/4] Uploading raw data to HDFS..."
-docker exec namenode hdfs dfs -rm -f -r /data/raw 2>/dev/null || true
+docker exec namenode hdfs dfs -rm -f -r /data/clean 2>/dev/null || true
+docker exec namenode hdfs dfs -rm -f -r /data/output 2>/dev/null || true
+
 docker exec namenode hdfs dfs -mkdir -p /data/raw
-docker cp data/water_quality_samples.csv namenode:/tmp/upload.csv
-docker exec namenode hdfs dfs -put /tmp/upload.csv /data/raw/water_quality_samples.csv
-docker cp data/site_metadata.csv namenode:/tmp/upload_meta.csv
-docker exec namenode hdfs dfs -put /tmp/upload_meta.csv /data/raw/site_metadata.csv
+docker cp data/Indian_water_data_pipe.csv namenode:/tmp/iwd_pipe.csv
+docker cp data/parameter_thresholds.csv namenode:/tmp/th.csv
+docker exec namenode hdfs dfs -put /tmp/iwd_pipe.csv /data/raw/Indian_water_data_pipe.csv
+docker exec namenode hdfs dfs -put /tmp/th.csv /data/raw/parameter_thresholds.csv
 docker exec namenode hdfs dfs -chmod -R 777 /data
 echo "  Raw data uploaded."
 docker exec namenode hdfs dfs -ls /data/raw/
@@ -45,36 +50,37 @@ docker exec namenode hdfs dfs -ls /data/raw/
 # ---------------------------------------------------------------------------
 # 2. Run Pig ETL
 # ---------------------------------------------------------------------------
-echo "[2/4] Running Pig ETL (etl_clean.pig + sample_source_join.pig)..."
-docker exec pig pig -x -4 /dev/stdin <<'PIGSCRIPT'
-RUN /pig-scripts/etl_clean.pig
-RUN /pig-scripts/sample_source_join.pig
-PIGSCRIPT
-echo "  Pig ETL complete."
+echo "[2/4] Running Pig ETL (etl_clean.pig)..."
+docker exec namenode pig /pig-scripts/etl_clean.pig
+echo "  -- Stage 1 (clean) complete"
 docker exec namenode hdfs dfs -ls /data/clean/
 
 # ---------------------------------------------------------------------------
-# 3. Load Hive warehouse tables and run validation queries
+# 3. Initialize Hive metastore and load warehouse tables
 # ---------------------------------------------------------------------------
 echo "[3/4] Loading Hive tables (warehouse.hql)..."
 docker exec -i hive-server2 hive -f /hive-scripts/warehouse.hql 2>&1 | tail -20 || true
 echo "  Hive tables loaded."
-echo "  Running sample validation query..."
+echo "  Running sample reporting query..."
 docker exec hive-server2 hive -e "
-  SELECT state, COUNT(*) AS cnt, ROUND(AVG(ph),2) AS avg_ph FROM water_quality_enriched GROUP BY state ORDER BY cnt DESC LIMIT 10;
+  SELECT state_name, sample_count, poor_count, pct_poor
+  FROM v_state_summary ORDER BY pct_poor DESC LIMIT 10;
 " 2>/dev/null
 
 # ---------------------------------------------------------------------------
 # 4. Run Spark MLlib pipeline
 # ---------------------------------------------------------------------------
 echo "[4/4] Running Spark MLlib classifier..."
-docker exec spark-master spark-submit \
+docker exec spark-master /spark/bin/spark-submit \
   --master spark://spark-master:7077 \
-  --jars /opt/spark/jars/spark-hive_2.12-3.5.0.jar \
+  --conf spark.hadoop.fs.defaultFS=hdfs://namenode:8020 \
+  --conf spark.hadoop.dfs.replication=1 \
   --conf spark.sql.warehouse.dir=/user/hive/warehouse \
-  --conf spark.hadoop.fs.defaultFS=hdfs://namenode:9000 \
-  --deploy-mode client \
-  /data/ml_quality.py 2>&1 | tail -50
+  --conf spark.driver.host=spark-master \
+  --conf spark.driver.bindAddress=0.0.0.0 \
+  --executor-memory 2G \
+  --driver-memory 2G \
+  /spark-scripts/ml_quality.py 2>&1 | tail -60
 
 echo "=========================================================="
 echo "  Pipeline complete. Results in HDFS: /data/output/ml_results"

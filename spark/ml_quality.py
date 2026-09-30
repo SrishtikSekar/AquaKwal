@@ -1,167 +1,125 @@
 #!/usr/bin/env python3
 """
-============================================================================
-AquaKwal: Water Quality Analytics Pipeline
+AquaKwal: Indian Water Quality Analytics Pipeline
 File: spark/ml_quality.py
-Purpose: Read the Hive/Pig-cleaned, enriched water quality dataset from HDFS
-         and train a Spark MLlib classifier to predict water quality
-         (SAFE vs UNSAFE) from physico-chemical features.
-           - HDFS -> Spark (distributed load)
-           - Spark MLlib (feature assembly, scaling, RandomForest)
-           - Model evaluation (accuracy, confusion matrix, F1)
-============================================================================
+Purpose: Read Pig-cleaned Indian water quality data from HDFS and train
+         a Spark MLlib classifier to predict water quality (GOOD/POOR).
 """
 
 import sys
-import os
 
 from pyspark.sql import SparkSession
-from pyspark.sql import functions as F
-from pyspark.sql.types import FloatType
+from pyspark.sql.types import StructType, StructField, FloatType, IntegerType, StringType
 from pyspark.ml import Pipeline
-from pyspark.ml.feature import (
-    VectorAssembler,
-    StandardScaler,
-    StringIndexer,
-    SQLTransformer,
-)
-from pyspark.ml.classification import RandomForestClassifier, LogisticRegression
+from pyspark.ml.feature import VectorAssembler, StringIndexer
+from pyspark.ml.classification import RandomForestClassifier
 from pyspark.ml.evaluation import BinaryClassificationEvaluator, MulticlassClassificationEvaluator
 from pyspark.ml.tuning import ParamGridBuilder, CrossValidator
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-HDFS_CLEAN_PATH = "/data/clean/water_quality_enriched"
+HDFS_INPUT_PATH = "/data/clean/water_quality_clean"
 HDFS_OUTPUT_DIR = "/data/output/ml_results"
+
+FEATURE_COLS = [
+    "temp_min", "temp_max", "dissolved_min", "dissolved_max",
+    "ph_min", "ph_max", "conductivity_min", "conductivity_max",
+    "bod_min", "bod_max", "nitrate_min", "nitrate_max",
+    "fecal_coliform_min", "fecal_coliform_max",
+    "total_coliform_min", "total_coliform_max",
+    "fecal_min", "fecal_max",
+]
 
 
 def main():
     spark = (
-        SparkSession.builder.appName("AquaKwal-WaterQuality-Classifier")
-        .config("spark.sql.warehouse.dir", "/user/hive/warehouse")
+        SparkSession.builder
+        .appName("AquaKwal-IndianWaterQuality-Classifier")
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")
 
-    # -----------------------------------------------------------------------
-    # 1. LOAD cleaned enriched data from HDFS (written by Pig ETL stage)
-    # -----------------------------------------------------------------------
-    print("[1/5] Loading cleaned enriched data from HDFS:", HDFS_CLEAN_PATH)
+    print("[1/6] Loading cleaned data from HDFS:", HDFS_INPUT_PATH)
 
-    df = spark.read.csv(HDFS_CLEAN_PATH, header=False, inferSchema=True)
+    schema = StructType([
+        StructField("stn_code", StringType(), True),
+        StructField("monitoring_location", StringType(), True),
+        StructField("year", IntegerType(), True),
+        StructField("water_body_type", StringType(), True),
+        StructField("state_name", StringType(), True),
+        StructField("temp_min", FloatType(), True),
+        StructField("temp_max", FloatType(), True),
+        StructField("dissolved_min", FloatType(), True),
+        StructField("dissolved_max", FloatType(), True),
+        StructField("ph_min", FloatType(), True),
+        StructField("ph_max", FloatType(), True),
+        StructField("conductivity_min", FloatType(), True),
+        StructField("conductivity_max", FloatType(), True),
+        StructField("bod_min", FloatType(), True),
+        StructField("bod_max", FloatType(), True),
+        StructField("nitrate_min", FloatType(), True),
+        StructField("nitrate_max", FloatType(), True),
+        StructField("fecal_coliform_min", FloatType(), True),
+        StructField("fecal_coliform_max", FloatType(), True),
+        StructField("total_coliform_min", FloatType(), True),
+        StructField("total_coliform_max", FloatType(), True),
+        StructField("fecal_min", FloatType(), True),
+        StructField("fecal_max", FloatType(), True),
+        StructField("water_quality_label", StringType(), True),
+    ])
 
-    # Rename columns to semantic names (Pig writes positionally)
-    col_names = [
-        "site_id", "sample_date", "ph", "temperature", "dissolved_oxygen",
-        "conductivity", "turbidity", "nitrate", "sulfate", "latitude",
-        "longitude", "water_quality_label", "watershed_name", "county",
-        "state", "elevation",
-    ]
-    df = df.toDF(*col_names)
-
-    # Cast numerics explicitly
-    numeric_cols = [
-        "ph", "temperature", "dissolved_oxygen", "conductivity",
-        "turbidity", "nitrate", "sulfate", "latitude", "longitude", "elevation",
-    ]
-    for c in numeric_cols:
-        df = df.withColumn(c, df[c].cast(FloatType()))
-
-    # Drop any remaining nulls in feature / label columns
-    feature_cols = numeric_cols + ["elevation"]
-    label_col = "water_quality_label"
-    df = df.na.drop(subset=feature_cols + [label_col])
+    df = spark.read.csv(HDFS_INPUT_PATH, header=False, schema=schema)
+    df = df.na.drop(subset=FEATURE_COLS + ["water_quality_label"])
 
     print("  Rows loaded:", df.count())
-    df.groupBy(label_col).count().show()
+    df.groupBy("water_quality_label").count().show()
 
-    # -----------------------------------------------------------------------
-    # 2. LABEL INDEXING — String "SAFE"/"UNSAFE" -> numeric 0/1
-    # -----------------------------------------------------------------------
     label_indexer = StringIndexer(
-        inputCol=label_col, outputCol="label", handleInvalid="skip"
+        inputCol="water_quality_label", outputCol="label", handleInvalid="skip"
     )
 
-    # -----------------------------------------------------------------------
-    # 3. FEATURE ENGINEERING — assemble numeric features into a vector,
-    #    then scale for algorithms sensitive to magnitude (LogReg).
-    # -----------------------------------------------------------------------
     assembler = VectorAssembler(
-        inputCols=feature_cols, outputCol="features_raw"
+        inputCols=FEATURE_COLS, outputCol="features"
     )
 
-    scaler = StandardScaler(
-        inputCol="features_raw", outputCol="features", withMean=True, withStd=True
-    )
-
-    # -----------------------------------------------------------------------
-    # 4. MODEL SELECTION — RandomForest (non-linear, robust to feature scale)
-    #    and LogisticRegression (linear baseline).  We use 5-fold CV with a
-    #    small grid.
-    # -----------------------------------------------------------------------
     rf = RandomForestClassifier(
         labelCol="label", featuresCol="features", predictionCol="prediction",
-        numTrees=50, maxDepth=6, seed=42,
+        numTrees=100, maxDepth=8, seed=42,
     )
 
-    lr = LogisticRegression(
-        labelCol="label", featuresCol="features", predictionCol="prediction",
-        maxIter=100, regParam=0.3, elasticNetParam=0.8, seed=42,
-    )
+    pipeline = Pipeline(stages=[StringIndexer(inputCol="water_quality_label", outputCol="label", handleInvalid="skip"), 
+                                VectorAssembler(inputCols=FEATURE_COLS, outputCol="features"), 
+                                RandomForestClassifier(labelCol="label", featuresCol="features", predictionCol="prediction", numTrees=100, maxDepth=8, seed=42)])
 
-    # Choose the RF classifier as the primary model for the pipeline.
-    classifier = rf
+    train, test = df.randomSplit([0.8, 0.2], seed=42)
+    print("[2/6] Train rows:", train.count(), "  Test rows:", test.count())
 
-    # -----------------------------------------------------------------------
-    # 5. BUILD PIPELINE
-    # -----------------------------------------------------------------------
-    pipeline = Pipeline(stages=[label_indexer, assembler, scaler, classifier])
-
-    # -----------------------------------------------------------------------
-    # 6. TRAIN / TEST SPLIT
-    # -----------------------------------------------------------------------
-    seed = 42
-    train, test = df.randomSplit([0.8, 0.2], seed=seed)
-
-    print("[2/5] Training rows:", train.count(), "  Test rows:", test.count())
-
-    # -----------------------------------------------------------------------
-    # 7. CROSS-VALIDATED HYPERPARAMETER SEARCH
-    # -----------------------------------------------------------------------
     param_grid = (
         ParamGridBuilder()
-        .addGrid(rf.numTrees, [30, 50])
-        .addGrid(rf.maxDepth, [4, 6])
+        .addGrid(rf.numTrees, [50, 100])
+        .addGrid(rf.maxDepth, [5, 8])
         .build()
     )
 
-    evaluator = BinaryClassificationEvaluator(
+    evaluator_auc = BinaryClassificationEvaluator(
         labelCol="label", rawPredictionCol="rawPrediction", metricName="areaUnderROC"
     )
 
     cv = CrossValidator(
         estimator=pipeline,
         estimatorParamMaps=param_grid,
-        evaluator=evaluator,
+        evaluator=evaluator_auc,
         numFolds=3,
-        seed=seed,
+        seed=42,
     )
 
-    # -----------------------------------------------------------------------
-    # 8. FIT & PREDICT
-    # -----------------------------------------------------------------------
-    print("[3/5] Training model (cross-validated)...")
+    print("[3/6] Training RandomForest (3-fold CV, 4-param grid)...")
     cv_model = cv.fit(train)
 
-    print("[4/5] Evaluating on test set...")
+    print("[4/6] Evaluating on test set...")
     predictions = cv_model.transform(test)
 
-    # Binary metrics
-    auc = evaluator.evaluate(predictions)
+    auc = evaluator_auc.evaluate(predictions)
     print("  AUC (areaUnderROC) on test set: {:.4f}".format(auc))
 
-    # Multiclass metrics
     mc_eval = MulticlassClassificationEvaluator(
         labelCol="label", predictionCol="prediction", metricName="f1"
     )
@@ -174,37 +132,26 @@ def main():
     accuracy = acc_eval.evaluate(predictions)
     print("  Accuracy on test set: {:.4f}".format(accuracy))
 
-    # Confusion matrix
     print("  Confusion Matrix:")
     predictions.select("label", "prediction").distinct().orderBy("label", "prediction").show()
 
-    # -----------------------------------------------------------------------
-    # 9. FEATURE IMPORTANCES (Random Forest)
-    # -----------------------------------------------------------------------
     best_model = cv_model.bestModel
-    stages = best_model.stages
-    rf_model = stages[-1]  # last stage of the pipeline
+    rf_model = best_model.stages[-1]
 
     importances = rf_model.featureImportances.toArray()
-    feat_imp = list(zip(feature_cols, importances))
+    feat_imp = list(zip(FEATURE_COLS, importances))
     feat_imp.sort(key=lambda x: x[1], reverse=True)
     print("  Feature Importances (top features):")
     for name, imp in feat_imp:
-        print("    {:<18s} {:.4f}".format(name, imp))
+        print("    {:<26s} {:.4f}".format(name, imp))
 
-    # -----------------------------------------------------------------------
-    # 10. PERSIST RESULTS to HDFS
-    # -----------------------------------------------------------------------
-    print("[5/5] Saving predictions and metrics to HDFS:", HDFS_OUTPUT_DIR)
+    print("[5/6] Saving results to HDFS:", HDFS_OUTPUT_DIR)
 
-    # Predictions
     predictions.select(
-        "site_id", "sample_date", "state", "watershed_name",
-        "ph", "dissolved_oxygen", "temperature", "nitrate", "sulfate",
-        "features", "label", "prediction", "probability",
+        "stn_code", "monitoring_location", "year", "water_body_type", "state_name",
+        *FEATURE_COLS, "water_quality_label", "prediction", "probability",
     ).write.mode("overwrite").parquet(HDFS_OUTPUT_DIR + "/predictions")
 
-    # Summary metrics
     metrics = [
         ("AUC", round(auc, 4)),
         ("F1", round(f1, 4)),
@@ -213,14 +160,13 @@ def main():
     metrics_df = spark.createDataFrame(metrics, ["metric", "value"])
     metrics_df.write.mode("overwrite").csv(HDFS_OUTPUT_DIR + "/metrics", header=True)
 
-    # Feature importances
     fi_rdd = spark.sparkContext.parallelize(
         [(name, float(imp)) for name, imp in feat_imp]
     )
     fi_df = spark.createDataFrame(fi_rdd, ["feature", "importance"])
     fi_df.write.mode("overwrite").csv(HDFS_OUTPUT_DIR + "/feature_importances", header=True)
 
-    print("Done. Pipeline complete: Pig ETL -> Hive DDL -> Spark MLlib")
+    print("[6/6] Done. Pipeline complete: Pig ETL -> Hive DDL -> Spark MLlib")
     spark.stop()
 
 

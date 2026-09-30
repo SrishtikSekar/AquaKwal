@@ -1,8 +1,6 @@
-version: "3.8"
-
 services:
   namenode:
-    image: bde2020/hadoop-namenode:2.0.3-hadoop3.2.1-java8
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
     container_name: namenode
     restart: unless-stopped
     environment:
@@ -10,23 +8,24 @@ services:
       - HDFS_CONF_dfs_replication=1
       - HDFS_CONF_dfs_webhdfs_enabled=true
       - HDFS_CONF_dfs_permissions_enabled=false
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:8020
+      - PIG_HOME=/opt/pig
+      - PATH=/opt/pig/bin:/opt/hadoop-3.2.1/bin:/opt/hadoop-3.2.1/sbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     volumes:
-      - ./data:/data
-      - ./docker/hive-site.xml:/etc/hadoop/conf/hive-site.xml:ro
-      - ./docker/bootstrap.sh:/bootstrap.sh:ro
-    command: ["/bin/bash", "/bootstrap.sh"]
+      - ../data:/data
+      - ../pig:/pig-scripts:ro
+      - ./pig-home/pig-0.17.0:/opt/pig:ro
     ports:
-      - "50070:50070"
       - "9870:9870"
-      - "9000:9000"
+      - "8020:8020"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9870"]
       interval: 30s
       timeout: 10s
-      retries: 10
+      retries: 15
 
   datanode:
-    image: bde2020/hadoop-datanode:2.0.3-hadoop3.2.1-java8
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
     container_name: datanode
     restart: unless-stopped
     depends_on:
@@ -34,21 +33,15 @@ services:
         condition: service_healthy
     environment:
       - DATANODE_NON_HDFS_USER=root
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:8020
       - HDFS_CONF_dfs_replication=1
       - HDFS_CONF_dfs_webhdfs_enabled=true
       - HDFS_CONF_dfs_permissions_enabled=false
-      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
     volumes:
-      - ./data:/data
-    command: ["tail", "-f", "/dev/null"]
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://namenode:50070"]
-      interval: 30s
-      timeout: 10s
-      retries: 10
+      - ../data:/data
 
   hive-server:
-    image: bde2020/hive-server2:2.0.0-hive2.3.2-spark2.4.0-hadoop3.2.1-java8
+    image: bde2020/hive:2.3.2
     container_name: hive-server2
     restart: unless-stopped
     depends_on:
@@ -60,26 +53,31 @@ services:
     environment:
       - HIVE_CORE_CONF_javax_jdo_option_ConnectionURL=jdbc:derby:;databaseName=/tmp/hive-metastore-db;create=true
       - HIVE_CONF_hive_jdbc_seatbelt=false
-      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:8020
     volumes:
-      - ./data:/data
-      - ./hive:/hive-scripts:ro
+      - ../data:/data
+      - ../hive:/hive-scripts:ro
 
   spark-master:
-    image: bitnami/spark:3.5.0
+    image: bde2020/spark-master:3.2.1-hadoop3.2
     container_name: spark-master
     restart: unless-stopped
     depends_on:
       - namenode
+      - datanode
     environment:
       - SPARK_MODE=master
       - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      - SPARK_SSL_ENABLED=no
+    volumes:
+      - ../spark:/spark-scripts:rw
     ports:
       - "8080:8080"
       - "7077:7077"
 
   spark-worker:
-    image: bitnami/spark:3.5.0
+    image: bde2020/spark-worker:3.2.1-hadoop3.2
     container_name: spark-worker
     restart: unless-stopped
     depends_on:
@@ -88,20 +86,11 @@ services:
       - SPARK_MODE=worker
       - SPARK_MASTER_URL=spark://spark-master:7077
       - SPARK_WORKER_MEMORY=2G
+      - SPARK_WORKER_CORES=2
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      - SPARK_SSL_ENABLED=no
+    volumes:
+      - ../spark:/spark-scripts:rw
     ports:
       - "4040:4040"
-
-  pig:
-    image: bde2020/hadoop-pig:2.0.3-hadoop3.2.1-java8
-    container_name: pig
-    restart: unless-stopped
-    depends_on:
-      - namenode
-      - datanode
-    environment:
-      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
-    volumes:
-      - ./pig:/pig-scripts:ro
-      - ./data:/data
-    entrypoint: ["/bin/bash"]
-    command: ["-c", "echo 'Pig container ready' && tail -f /dev/null"]

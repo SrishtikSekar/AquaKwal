@@ -1,9 +1,9 @@
-# AquaKwal — Large-Scale Water Quality Analytics & Pattern Discovery
+# AquaKwal — Water Quality Analytics Pipeline
 
 A distributed big-data analytics pipeline that ingests raw water quality data,
 cleans and transforms it with Apache Pig, makes it queryable through Apache Hive,
 and trains a machine learning classifier with Spark MLlib to predict water
-safety from physico-chemical features.
+potability from physico-chemical features.
 
 **Pipeline architecture:** HDFS → Pig (ETL) → Hive (warehouse) → Spark MLlib (classification)
 
@@ -41,21 +41,22 @@ AquaKwal/
 │   ├── bootstrap.sh          # HDFS init + daemon startup script
 │   └── hive-site.xml         # Hive metastore config override
 ├── pig/
-│   ├── etl_clean.pig         # ETL: cast, dedup, filter, derive quality label
-│   └── sample_source_join.pig # Multi-source join (samples + site metadata)
+│   ├── etl_clean.pig         # ETL: cast, impute means, dedup, derive label
+│   └── sample_source_join.pig # Join cleaned data with WHO thresholds
 ├── hive/
-│   └── warehouse.hql         # External table DDL + reporting views
+│   └── warehouse.hql         # External table DDL + reporting views + validation
 ├── spark/
 │   └── ml_quality.py         # Spark MLlib RandomForest classifier w/ CV
 ├── data/
-│   ├── generate_data.py      # Synthetic dataset generator
-│   ├── water_quality_samples.csv
-│   └── site_metadata.csv
+│   ├── water_potability.csv  # Real Kaggle water quality dataset (3,276 rows)
+│   └── parameter_thresholds.csv  # WHO drinking-water guideline thresholds
 ├── scripts/
-│   └── run_pipeline.sh       # End-to-end pipeline runner
+│   ├── run_pipeline.sh       # End-to-end pipeline runner
+│   └── demo.sh               # Per-stage verification script
 ├── docs/
-│   ├── proposal.md
-│   └── report.md
+│   ├── proposal.md           # Project proposal
+│   ├── report.md             # Final report (6-10 pages)
+│   └── operations.md         # Detailed ops/runbook
 ├── README.md
 └── .gitignore
 ```
@@ -65,61 +66,66 @@ AquaKwal/
 ## Prerequisites
 
 - Docker Engine + Docker Compose v2
-- 8+ GB RAM allocated to Docker
-- Ports 9870, 50070, 10000, 8080, 7077 free
+- 6+ GB RAM allocated to Docker
+- Ports 9870, 50070, 9000, 10000, 8080, 7077, 4040 free
 
 ---
 
 ## Quick Start
 
 ```bash
-# 1. Generate/replace sample data (or use your own CSV at data/)
-cd data && python3 generate_data.py
-
-# 2. Build and start the cluster
+# 1. Start the cluster
 docker compose up -d
 
-# 3. Wait ~30 s, then run the full pipeline
+# 2. Wait ~60 s for HDFS to be healthy
+#    Check: docker exec namenode hdfs dfsadmin -report
+
+# 3. Run the full pipeline
 ./scripts/run_pipeline.sh
 ```
 
-**Expected output** (console tail):
+**Expected output (console tail):**
 - HDFS shows `/data/raw/`, `/data/clean/`, `/data/output/ml_results/` populated
-- Hive reports 10-state summary with avg pH and sample counts
-- Spark prints `AUC`, `F1`, `Accuracy`, and top-5 feature importances
+- Hive reports potability summary with avg pH and sample counts
+- Spark prints `AUC`, `F1`, `Accuracy`, and feature importances
 
 ---
 
 ## Pipeline Stages in Detail
 
 ### Stage 1 — HDFS (Storage)
-Raw CSV files (`water_quality_samples.csv`, `site_metadata.csv`) are uploaded
-to HDFS at `/data/raw/`. HDFS provides the durable, distributed backing store.
+The raw `water_potability.csv` (3,276 rows, 9 physico-chemical features + 1
+binary label) and `parameter_thresholds.csv` (WHO guidelines) are uploaded to
+HDFS at `/data/raw/`.
 
 ### Stage 2 — Pig (ETL)
 `pig/etl_clean.pig`:
-1. Loads raw records as chararray (defensive).
-2. Casts numerics, replacing `NA` / empty / invalid strings with `NULL`.
-3. Derives `water_quality_label` (SAFE/UNSAFE) from WHO pH (6.5–8.5) and
-   dissolved-oxygen (≥5 mg/L) thresholds.
-4. Filters records with impossible values (pH > 14, etc.).
-5. Deduplicates by `(site_id, sample_date)` via GROUP + LIMIT.
-6. Stores cleaned data to `/data/clean/water_quality_clean`.
+1. Loads raw CSV as chararray (defensive parsing).
+2. Strips the header row.
+3. Casts 9 numeric columns to float/int with regex guards (invalid → NULL).
+4. Computes column means via `GROUP ALL` + `AVG`.
+5. CROSSes means back to each row and imputes NULLs (mean imputation).
+6. Derives `water_quality_label` (POTABLE/NOT_POTABLE) from the Potability flag.
+7. Deduplicates exact duplicates via `DISTINCT`.
+8. Stores cleaned data to `/data/clean/water_quality_clean`.
 
-`pig/sample_source_join.pig` joins samples with station metadata on `site_id`.
+`pig/sample_source_join.pig` joins the cleaned data with the WHO thresholds
+reference via CROSS (lookup pattern) and computes a `standards_violation_count`
+per sample — how many parameters exceed guideline limits.
 
 ### Stage 3 — Hive (Warehouse)
-`hive/warehouse.hql` defines two external tables over the Pig output and
-creates reporting views:
-- `v_state_summary` — avg metrics + % unsafe per state
-- `v_unsafe_sites` — stations where >50% of samples are UNSAFE
-- `v_monthly_trend` — seasonal pH/DO/nitrate trends
+`hive/warehouse.hql` defines external tables over Pig's output and creates
+reporting views:
+- `v_potability_summary` — avg metrics + violation count per potability class
+- `v_violation_analysis` — violation count distribution
+- `v_param_stats` — min/mean/max per parameter
+
+Validation queries check row counts, duplicates, null percentages, and class balance.
 
 ### Stage 4 — Spark MLlib (Classification)
 `spark/ml_quality.py`:
-1. Reads the Pig-cleaned, Hive-enriched dataset from HDFS.
-2. Assembles a 10-feature vector (pH, DO, temperature, conductivity, turbidity,
-   nitrate, sulfate, lat, lon, elevation).
+1. Reads the Pig-cleaned, Hive-backed enriched dataset from HDFS.
+2. Assembles a 10-feature vector (9 water quality parameters + violation count).
 3. Standard-scales features; StringIndexes the label.
 4. 5-fold cross-validated RandomForest (grid over numTrees, maxDepth).
 5. Evaluates AUC, F1, accuracy, and emits feature importances.
@@ -130,15 +136,16 @@ creates reporting views:
 ## Demo Script
 
 ```bash
-# Run a 30-second demo of each stage
+# Run a quick check of each pipeline stage
 ./scripts/demo.sh
 ```
 
 The demo script:
-1. Confirms HDFS raw data presence
-2. Shows Pig output row count & null report
-3. Runs a Hive summary query
-4. Triggers the Spark model and prints metrics
+1. Lists running containers
+2. Checks HDFS raw data presence
+3. Counts Pig cleaned rows
+4. Runs the Hive summary view
+5. Reads Spark metrics from HDFS
 
 ---
 
@@ -146,30 +153,20 @@ The demo script:
 
 | Check-in | Evidence |
 |----------|----------|
-| 1 — Ingestion | `hdfs dfs -ls /data/raw/` shows both CSVs |
-| 2 — Draft results | Hive `v_state_summary` query + Spark AUC output |
+| 1 — Ingestion | `hdfs dfs -ls /data/raw/` shows water_potability.csv |
+| 2 — Draft results | Hive `v_potability_summary` + Spark AUC output |
 
 ---
 
 ## Reproducing Results
 
-All results are reproducible with the fixed random seed (`42`) in:
-- `data/generate_data.py`
-- `spark/ml_quality.py`
-- `scripts/run_pipeline.sh`
+All random seeds are fixed (`42`) in:
+- `spark/ml_quality.py` (train/test split, CV, RandomForest)
 
----
-
-## Troubleshooting
-
-| Issue | Solution |
-|-------|----------|
-| `Service 'namenode' is unhealthy` | Stop cluster, `docker system prune`, retry |
-| `Permission denied` on HDFS | Run `hdfs dfs -chmod -R 777 /data` inside namenode |
-| Spark can't resolve `namenode` | Ensure `fs.defaultFS=hdfs://namenode:9000` in env |
+Data is the real `water_potability.csv` — no synthetic generation needed.
 
 ---
 
 ## License
 
-Apache 2.0 — see LICENSE.
+Apache 2.0

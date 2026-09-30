@@ -1,55 +1,73 @@
 -- ============================================================================
--- AquaKwal: Water Quality Analytics Pipeline
+-- AquaKwal: Indian Water Quality Analytics Pipeline
 -- File: hive/warehouse.hql
--- Purpose: Create external Hive tables over Pig-cleaned data, then expose
---          queryable views.  Hive sits on top of HDFS data as a queryable
---          warehouse for reporting and validation.
+-- Purpose: Create external Hive tables over Pig-cleaned Indian water data,
+--          and expose queryable views for reporting and validation.
 -- ============================================================================
 
 -- ---------------------------------------------------------------------------
--- 1. Cleaned samples table (output of pig/etl_clean.pig)
+-- 1. Cleaned water quality table (output of pig/etl_clean.pig)
 -- ---------------------------------------------------------------------------
 CREATE EXTERNAL TABLE IF NOT EXISTS water_quality_clean (
-    site_id            STRING,
-    sample_date        STRING,
-    ph                 FLOAT,
-    temperature        FLOAT,
-    dissolved_oxygen   FLOAT,
-    conductivity       FLOAT,
-    turbidity          FLOAT,
-    nitrate            FLOAT,
-    sulfate            FLOAT,
-    latitude           DOUBLE,
-    longitude          DOUBLE,
-    source_flag        STRING,
-    water_quality_label STRING
+    stn_code              STRING,
+    monitoring_location   STRING,
+    year                  INT,
+    water_body_type       STRING,
+    state_name            STRING,
+    temp_min              FLOAT,
+    temp_max              FLOAT,
+    dissolved_min         FLOAT,
+    dissolved_max         FLOAT,
+    ph_min                FLOAT,
+    ph_max                FLOAT,
+    conductivity_min      FLOAT,
+    conductivity_max      FLOAT,
+    bod_min               FLOAT,
+    bod_max               FLOAT,
+    nitrate_min           FLOAT,
+    nitrate_max           FLOAT,
+    fecal_coliform_min    FLOAT,
+    fecal_coliform_max    FLOAT,
+    total_coliform_min    FLOAT,
+    total_coliform_max    FLOAT,
+    fecal_min             FLOAT,
+    fecal_max             FLOAT,
+    water_quality_label   STRING
 )
 ROW FORMAT DELIMITED
-    FIELDS TERIMINATED BY ','
+    FIELDS TERMINATED BY ','
 STORED AS TEXTFILE
 LOCATION '/data/clean/water_quality_clean';
 
 -- ---------------------------------------------------------------------------
--- 2. Enriched dataset table (output of pig/sample_source_join.pig)
---    Adds watershed / county / state / elevation context.
+-- 2. Enriched dataset table (placeholder for future joins)
 -- ---------------------------------------------------------------------------
 CREATE EXTERNAL TABLE IF NOT EXISTS water_quality_enriched (
-    site_id            STRING,
-    sample_date        STRING,
-    ph                 FLOAT,
-    temperature        FLOAT,
-    dissolved_oxygen   FLOAT,
-    conductivity       FLOAT,
-    turbidity          FLOAT,
-    nitrate            FLOAT,
-    sulfate            FLOAT,
-    latitude           DOUBLE,
-    longitude          DOUBLE,
-    water_quality_label STRING,
-    watershed_name     STRING,
-    county             STRING,
-    state              STRING,
-    elevation          FLOAT
+    stn_code              STRING,
+    monitoring_location   STRING,
+    year                  INT,
+    water_body_type       STRING,
+    state_name            STRING,
+    temp_min              FLOAT,
+    temp_max              FLOAT,
+    dissolved_min         FLOAT,
+    dissolved_max         FLOAT,
+    ph_min                FLOAT,
+    ph_max                FLOAT,
+    conductivity_min      FLOAT,
+    conductivity_max      FLOAT,
+    bod_min               FLOAT,
+    bod_max               FLOAT,
+    nitrate_min           FLOAT,
+    nitrate_max           FLOAT,
+    fecal_coliform_min    FLOAT,
+    fecal_coliform_max    FLOAT,
+    total_coliform_min    FLOAT,
+    total_coliform_max    FLOAT,
+    fecal_min             FLOAT,
+    fecal_max             FLOAT,
+    water_quality_label   STRING,
+    standards_violation_count INT
 )
 ROW FORMAT DELIMITED
     FIELDS TERMINATED BY ','
@@ -60,72 +78,61 @@ LOCATION '/data/clean/water_quality_enriched';
 -- 3. Reporting views
 -- ---------------------------------------------------------------------------
 
--- Average water quality metrics by state
+-- State-wise water quality summary
 CREATE OR REPLACE VIEW v_state_summary AS
 SELECT
-    state,
-    COUNT(*)                           AS sample_count,
-    ROUND(AVG(ph), 2)                  AS avg_ph,
-    ROUND(AVG(dissolved_oxygen), 2)    AS avg_do,
-    ROUND(AVG(temperature), 2)         AS avg_temp,
-    ROUND(AVG(turbidity), 2)           AS avg_turbidity,
-    ROUND(AVG(nitrate), 2)             AS avg_nitrate,
-    SUM(CASE WHEN water_quality_label = 'UNSAFE' THEN 1 ELSE 0 END) AS unsafe_count,
-    ROUND(AVG(CAST(water_quality_label = 'UNSAFE' AS DOUBLE)) * 100, 2) AS pct_unsafe
-FROM water_quality_enriched
-GROUP BY state;
-
--- Unsafe sites — stations where >50% of samples are UNSAFE
-CREATE OR REPLACE VIEW v_unsafe_sites AS
-SELECT
-    site_id,
-    watershed_name,
-    county,
-    state,
-    COUNT(*)                                                   AS total_samples,
-    SUM(CASE WHEN water_quality_label = 'UNSAFE' THEN 1 ELSE 0 END) AS unsafe_samples,
-    ROUND(AVG(ph), 2)                                          AS avg_ph,
-    ROUND(AVG(dissolved_oxygen), 2)                            AS avg_do
-FROM water_quality_enriched
-GROUP BY site_id, watershed_name, county, state
-HAVING (SUM(CASE WHEN water_quality_label = 'UNSAFE' THEN 1 ELSE 0 END) * 1.0 / COUNT(*)) > 0.5
-ORDER BY unsafe_samples DESC;
-
--- Trend analysis by month (requires Hive 0.12+ date functions)
-CREATE OR REPLACE VIEW v_monthly_trend AS
-SELECT
-    SUBSTR(sample_date, 1, 7)    AS year_month,
-    COUNT(*)                     AS total_samples,
-    ROUND(AVG(ph), 2)            AS avg_ph,
-    ROUND(AVG(dissolved_oxygen), 2) AS avg_do,
-    ROUND(AVG(nitrate), 2)       AS avg_nitrate,
-    ROUND(AVG(sulfate), 2)       AS avg_sulfate
-FROM water_quality_enriched
-WHERE sample_date RLIKE '^[0-9]{4}-[0-9]{2}'
-GROUP BY SUBSTR(sample_date, 1, 7)
-ORDER BY year_month;
-
--- ---------------------------------------------------------------------------
--- 4. Sample validation queries (run after ETL to confirm data integrity)
--- ---------------------------------------------------------------------------
-
--- Row count check
-SELECT 'row_count' AS metric, COUNT(*) AS value FROM water_quality_clean;
-
--- Duplicate check
-SELECT 'duplicate_keys' AS metric,
-    (COUNT(*) - COUNT(DISTINCT CONCAT(site_id, '|', sample_date))) AS value
-FROM water_quality_clean;
-
--- Null percentage per numeric column
-SELECT 'null_pct_ph' AS metric,
-    ROUND(AVG(CASE WHEN ph IS NULL THEN 1 ELSE 0 END) * 100, 2) AS value
+    state_name,
+    COUNT(*)                                          AS sample_count,
+    ROUND(AVG(temp_min), 2)                          AS avg_temp_min,
+    ROUND(AVG(temp_max), 2)                          AS avg_temp_max,
+    ROUND(AVG(dissolved_min), 2)                     AS avg_dissolved_min,
+    ROUND(AVG(ph_min), 2)                            AS avg_ph_min,
+    ROUND(AVG(ph_max), 2)                            AS avg_ph_max,
+    ROUND(AVG(bod_max), 2)                           AS avg_bod_max,
+    ROUND(AVG(nitrate_max), 2)                       AS avg_nitrate_max,
+    ROUND(AVG(fecal_coliform_max), 2)                AS avg_fecal_coliform_max,
+    SUM(CASE WHEN water_quality_label = 'POOR' THEN 1 ELSE 0 END) AS poor_count,
+    ROUND(AVG(CASE WHEN water_quality_label = 'POOR' THEN 1.0 ELSE 0.0 END) * 100, 2) AS pct_poor
 FROM water_quality_clean
-UNION ALL
-SELECT 'null_pct_do' AS metric,
-    ROUND(AVG(CASE WHEN dissolved_oxygen IS NULL THEN 1 ELSE 0 END) * 100, 2) AS value
+GROUP BY state_name;
+
+-- Water body type summary
+CREATE OR REPLACE VIEW v_water_body_summary AS
+SELECT
+    water_body_type,
+    COUNT(*)                                          AS sample_count,
+    ROUND(AVG(dissolved_min), 2)                     AS avg_dissolved_min,
+    ROUND(AVG(bod_max), 2)                           AS avg_bod_max,
+    ROUND(AVG(fecal_coliform_max), 2)                AS avg_fecal_coliform_max,
+    SUM(CASE WHEN water_quality_label = 'POOR' THEN 1 ELSE 0 END) AS poor_count,
+    ROUND(AVG(CASE WHEN water_quality_label = 'POOR' THEN 1.0 ELSE 0.0 END) * 100, 2) AS pct_poor
 FROM water_quality_clean
-UNION ALL
-SELECT 'null_pct_temp' AS metric,
-    ROUND(AVG(CASE WHEN temperature IS NULL THEN 1 ELSE 0 END) * 100, 2) AS value
-FROM water_quality_clean;
+GROUP BY water_body_type;
+
+-- Yearly trend
+CREATE OR REPLACE VIEW v_yearly_trend AS
+SELECT
+    year,
+    COUNT(*)                                          AS sample_count,
+    ROUND(AVG(dissolved_min), 2)                     AS avg_dissolved_min,
+    ROUND(AVG(bod_max), 2)                           AS avg_bod_max,
+    ROUND(AVG(nitrate_max), 2)                       AS avg_nitrate_max,
+    SUM(CASE WHEN water_quality_label = 'POOR' THEN 1 ELSE 0 END) AS poor_count,
+    ROUND(AVG(CASE WHEN water_quality_label = 'POOR' THEN 1.0 ELSE 0.0 END) * 100, 2) AS pct_poor
+FROM water_quality_clean
+GROUP BY year
+ORDER BY year;
+
+-- Violation analysis (CPCB standards)
+CREATE OR REPLACE VIEW v_violation_analysis AS
+SELECT
+    state_name,
+    water_body_type,
+    SUM(CASE WHEN dissolved_min < 4.0 THEN 1 ELSE 0 END)         AS dissolved_violations,
+    SUM(CASE WHEN ph_min < 6.5 OR ph_max > 8.5 THEN 1 ELSE 0 END) AS ph_violations,
+    SUM(CASE WHEN bod_max > 3.0 THEN 1 ELSE 0 END)               AS bod_violations,
+    SUM(CASE WHEN fecal_coliform_max > 2500 THEN 1 ELSE 0 END)   AS fecal_violations,
+    COUNT(*)                                                     AS total_samples
+FROM water_quality_clean
+GROUP BY state_name, water_body_type
+ORDER BY state_name, water_body_type;
