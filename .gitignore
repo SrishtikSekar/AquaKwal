@@ -1,9 +1,42 @@
-/data/
-node_modules/
+# Data files
+/data/*.csv
+/data/*.tsv
+/data/*.parquet
+/data/*.pipe.csv
+
+# Python
 *.pyc
 __pycache__/
-.DS_Store
-.env
+.pytest_cache/
+*.egg-info/
 
 # Docker
 *.pid
+.docker/
+
+# IDE
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*.swo
+
+# Large binaries
+/docker/pig-home/
+/docker/pig-0.17.0.tar.gz
+
+# Hadoop/Spark temp
+/hadoop/
+/tmp/hadoop-*
+/tmp/spark-*
+
+# Logs
+*.log
+logs/
+
+# OS
+.env
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
