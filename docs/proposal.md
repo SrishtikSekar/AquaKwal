@@ -1,5 +1,8 @@
 # AquaKwal Project Proposal
 
+> **Legacy proposal:** this planned the earlier Kaggle dataset. The implemented
+> pipeline uses the 23-column CPCB dataset documented in the root `README.md`.
+
 **Title:** Large-Scale Water Quality Analytics and Pattern Discovery Using Distributed Big Data and Machine Learning
 
 **Team:** 3 students (Team AquaKwal)

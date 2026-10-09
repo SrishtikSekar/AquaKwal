@@ -1,5 +1,9 @@
 # AquaKwal — Final Report
 
+> **Legacy draft:** the executable project now uses the 23-column CPCB dataset,
+> not the Kaggle dataset described below. Do not submit the numerical claims in
+> this draft as current results; see `docs/testing.md` for verified evidence.
+
 **Title:** Large-Scale Water Quality Analytics and Pattern Discovery Using Distributed Big Data and Machine Learning
 
 **Course:** CSE412 — Big Data & Large-Scale Computing

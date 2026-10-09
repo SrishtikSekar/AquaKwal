@@ -3,6 +3,7 @@
 /data/*.tsv
 /data/*.parquet
 /data/*.pipe.csv
+!/data/parameter_thresholds.csv
 
 # Python
 *.pyc

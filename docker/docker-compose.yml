@@ -1,6 +1,9 @@
 services:
   namenode:
-    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    image: aquakwal-namenode:hadoop3.2.1-pig0.17.0
+    build:
+      context: .
+      dockerfile: Dockerfile.namenode
     container_name: namenode
     restart: unless-stopped
     environment:
@@ -14,7 +17,6 @@ services:
     volumes:
       - ../data:/data
       - ../pig:/pig-scripts:ro
-      - ./pig-home/pig-0.17.0:/opt/pig:ro
     ports:
       - "9870:9870"
       - "8020:8020"
@@ -47,11 +49,12 @@ services:
     depends_on:
       - namenode
       - datanode
+    working_dir: /opt/hive/bin
+    command: ["/bin/bash", "/hive-scripts/startup.sh"]
     ports:
       - "10000:10000"
       - "10002:10002"
     environment:
-      - HIVE_CORE_CONF_javax_jdo_option_ConnectionURL=jdbc:derby:;databaseName=/tmp/hive-metastore-db;create=true
       - HIVE_CONF_hive_jdbc_seatbelt=false
       - CORE_CONF_fs_defaultFS=hdfs://namenode:8020
     volumes:
@@ -59,17 +62,19 @@ services:
       - ../hive:/hive-scripts:ro
 
   spark-master:
-    image: bde2020/spark-master:3.2.1-hadoop3.2
+    image: aquakwal-spark-master:3.2.1-hadoop3.2
+    build:
+      context: .
+      dockerfile: Dockerfile.spark
+      args:
+        SPARK_BASE: bde2020/spark-master:3.2.1-hadoop3.2
     container_name: spark-master
     restart: unless-stopped
     depends_on:
       - namenode
       - datanode
     environment:
-      - SPARK_MODE=master
-      - SPARK_RPC_AUTHENTICATION_ENABLED=no
-      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
-      - SPARK_SSL_ENABLED=no
+      - INIT_DAEMON_STEP=setup_spark
     volumes:
       - ../spark:/spark-scripts:rw
     ports:
@@ -77,19 +82,20 @@ services:
       - "7077:7077"
 
   spark-worker:
-    image: bde2020/spark-worker:3.2.1-hadoop3.2
+    image: aquakwal-spark-worker:3.2.1-hadoop3.2
+    build:
+      context: .
+      dockerfile: Dockerfile.spark
+      args:
+        SPARK_BASE: bde2020/spark-worker:3.2.1-hadoop3.2
     container_name: spark-worker
     restart: unless-stopped
     depends_on:
       - spark-master
     environment:
-      - SPARK_MODE=worker
-      - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_MASTER=spark://spark-master:7077
       - SPARK_WORKER_MEMORY=2G
       - SPARK_WORKER_CORES=2
-      - SPARK_RPC_AUTHENTICATION_ENABLED=no
-      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
-      - SPARK_SSL_ENABLED=no
     volumes:
       - ../spark:/spark-scripts:rw
     ports:

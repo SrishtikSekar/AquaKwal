@@ -5,7 +5,7 @@
 # Run AFTER: ./scripts/run_pipeline.sh
 # ============================================================================
 
-set -e
+set -Eeuo pipefail
 
 echo "=========================================================="
 echo "  AquaKwal DEMO — verifying pipeline stages"
@@ -28,8 +28,11 @@ echo "--- [3] Pig cleaned row count ---"
 docker exec namenode hdfs dfs -cat /data/clean/water_quality_clean/part-* 2>/dev/null | wc -l
 
 # 4. Hive summary
-echo "--- [4] Hive reporting view: v_potability_summary ---"
-docker exec hive-server2 hive -e "SELECT * FROM v_potability_summary" 2>/dev/null || echo "  (load Hive: docker exec -i hive-server2 hive -f /hive-scripts/warehouse.hql)"
+echo "--- [4] Hive reporting view: v_state_summary ---"
+docker exec hive-server2 /opt/hive/bin/beeline \
+  -u 'jdbc:hive2://localhost:10000/default' -n root --silent=true -e \
+  "SELECT state_name, sample_count, poor_count, pct_poor FROM v_state_summary ORDER BY pct_poor DESC LIMIT 10" \
+  2>/dev/null || echo "  (load Hive with scripts/run_pipeline.sh)"
 
 # 5. Spark model metrics
 echo "--- [5] Spark ML metrics ---"

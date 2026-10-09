@@ -1,97 +1,97 @@
--- ============================================================================
--- AquaKwal: Water Quality Analytics Pipeline
--- File: pig/sample_source_join.pig
--- Purpose: Join the Pig-cleaned water quality data with a regulatory
---          parameter-thresholds reference file (WHO drinking-water standards)
---          to compute a standards_violation_count per sample.
--- ---------------------------------------------------------------------------
--- Input 1: /data/clean/water_quality_clean  (output of etl_clean.pig)
--- Input 2: /data/raw/parameter_thresholds.csv (WHO guideline thresholds)
--- Output : /data/clean/water_quality_enriched
---          Adds: standards_violation_count
--- ---------------------------------------------------------------------------
+-- Enrich CPCB rows with a count of regulatory threshold violations.
+-- The one-row threshold file has this schema:
+-- dissolved_min,ph_min,ph_max,bod_max,fecal_coliform_max
 
--- ---------------------------------------------------------------------------
--- 1. LOAD cleaned water quality data (written by etl_clean.pig)
---    Schema matches the STORE output: ph, hardness, solids, chloramines,
---    sulfate, conductivity, organic_carbon, trihalomethanes, turbidity,
---    potability, water_quality_label
--- ---------------------------------------------------------------------------
+%default CLEAN_INPUT '/data/clean/water_quality_clean'
+%default THRESHOLDS_INPUT '/data/raw/parameter_thresholds.csv'
+%default ENRICHED_OUTPUT '/data/clean/water_quality_enriched'
 
-clean = LOAD '/data/clean/water_quality_clean'
-    USING PigStorage(',')
+clean = LOAD '$CLEAN_INPUT'
+    USING PigStorage('|')
     AS (
-        ph:float,
-        hardness:float,
-        solids:float,
-        chloramines:float,
-        sulfate:float,
-        conductivity:float,
-        organic_carbon:float,
-        trihalomethanes:float,
-        turbidity:float,
-        potability:int,
+        stn_code:chararray,
+        monitoring_location:chararray,
+        year:int,
+        water_body_type:chararray,
+        state_name:chararray,
+        temp_min:float,
+        temp_max:float,
+        dissolved_min:float,
+        dissolved_max:float,
+        ph_min:float,
+        ph_max:float,
+        conductivity_min:float,
+        conductivity_max:float,
+        bod_min:float,
+        bod_max:float,
+        nitrate_min:float,
+        nitrate_max:float,
+        fecal_coliform_min:float,
+        fecal_coliform_max:float,
+        total_coliform_min:float,
+        total_coliform_max:float,
+        fecal_min:float,
+        fecal_max:float,
         water_quality_label:chararray
     );
 
--- ---------------------------------------------------------------------------
--- 2. LOAD reference thresholds (single data row + header)
---    Columns: ph_min, ph_max, hardness_max, solids_max, chloramines_max,
---             sulfate_max, conductivity_max, organic_carbon_max,
---             trihalomethanes_max, turbidity_max
--- ---------------------------------------------------------------------------
-
-thresholds_raw = LOAD '/data/raw/parameter_thresholds.csv'
+thresholds_raw = LOAD '$THRESHOLDS_INPUT'
     USING PigStorage(',')
     AS (
-        ph_min:float, ph_max:float, hardness_max:float, solids_max:float,
-        chloramines_max:float, sulfate_max:float, conductivity_max:float,
-        organic_carbon_max:float, trihalomethanes_max:float, turbidity_max:float
+        dissolved_min:chararray,
+        ph_min:chararray,
+        ph_max:chararray,
+        bod_max:chararray,
+        fecal_coliform_max:chararray
     );
 
--- Strip header (header row has non-numeric ph_min that parses as NULL)
-thresholds = FILTER thresholds_raw BY ph_min IS NOT NULL;
-
--- ---------------------------------------------------------------------------
--- 3. CROSS join: attach WHO thresholds to every sample row
---    (lookup pattern — thresholds is a 1-row reference table)
--- ---------------------------------------------------------------------------
+-- Reject the header and incomplete threshold rows.
+thresholds = FOREACH (
+    FILTER thresholds_raw BY
+        dissolved_min MATCHES '[0-9.]+' AND
+        ph_min MATCHES '[0-9.]+' AND
+        ph_max MATCHES '[0-9.]+' AND
+        bod_max MATCHES '[0-9.]+' AND
+        fecal_coliform_max MATCHES '[0-9.]+'
+) GENERATE
+    (float)dissolved_min AS dissolved_min,
+    (float)ph_min AS ph_min,
+    (float)ph_max AS ph_max,
+    (float)bod_max AS bod_max,
+    (float)fecal_coliform_max AS fecal_coliform_max;
 
 joined = CROSS clean, thresholds;
 
--- ---------------------------------------------------------------------------
--- 4. COMPUTE standards_violation_count per sample.
---    Each parameter is compared against its WHO guideline.
---    Uses nested ternary + integer addition (Pig has no CASE).
--- ---------------------------------------------------------------------------
-
 enriched = FOREACH joined GENERATE
-    clean::ph               AS ph,
-    clean::hardness         AS hardness,
-    clean::solids           AS solids,
-    clean::chloramines      AS chloramines,
-    clean::sulfate          AS sulfate,
-    clean::conductivity     AS conductivity,
-    clean::organic_carbon   AS organic_carbon,
-    clean::trihalomethanes  AS trihalomethanes,
-    clean::turbidity        AS turbidity,
-    clean::potability       AS potability,
-    clean::water_quality_label AS water_quality_label,
+    clean::stn_code,
+    clean::monitoring_location,
+    clean::year,
+    clean::water_body_type,
+    clean::state_name,
+    clean::temp_min,
+    clean::temp_max,
+    clean::dissolved_min,
+    clean::dissolved_max,
+    clean::ph_min,
+    clean::ph_max,
+    clean::conductivity_min,
+    clean::conductivity_max,
+    clean::bod_min,
+    clean::bod_max,
+    clean::nitrate_min,
+    clean::nitrate_max,
+    clean::fecal_coliform_min,
+    clean::fecal_coliform_max,
+    clean::total_coliform_min,
+    clean::total_coliform_max,
+    clean::fecal_min,
+    clean::fecal_max,
+    clean::water_quality_label,
     (
-        (clean::ph < thresholds::ph_min OR clean::ph > thresholds::ph_max ? 1 : 0)
-        + (clean::hardness      > thresholds::hardness_max      ? 1 : 0)
-        + (clean::solids        > thresholds::solids_max        ? 1 : 0)
-        + (clean::chloramines   > thresholds::chloramines_max   ? 1 : 0)
-        + (clean::sulfate       > thresholds::sulfate_max       ? 1 : 0)
-        + (clean::conductivity  > thresholds::conductivity_max  ? 1 : 0)
-        + (clean::organic_carbon > thresholds::organic_carbon_max ? 1 : 0)
-        + (clean::trihalomethanes > thresholds::trihalomethanes_max ? 1 : 0)
-        + (clean::turbidity     > thresholds::turbidity_max     ? 1 : 0)
-    ) AS standards_violation_count
-    ;
+        (clean::dissolved_min < thresholds::dissolved_min ? 1 : 0)
+        + (clean::ph_min < thresholds::ph_min OR clean::ph_max > thresholds::ph_max ? 1 : 0)
+        + (clean::bod_max > thresholds::bod_max ? 1 : 0)
+        + (clean::fecal_coliform_max > thresholds::fecal_coliform_max ? 1 : 0)
+    ) AS standards_violation_count;
 
--- ---------------------------------------------------------------------------
--- 5. STORE enriched output to HDFS
--- ---------------------------------------------------------------------------
-
-STORE enriched INTO '/data/clean/water_quality_enriched' USING PigStorage(',');
+STORE enriched INTO '$ENRICHED_OUTPUT' USING PigStorage('|');

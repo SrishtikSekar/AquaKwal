@@ -35,7 +35,7 @@ CREATE EXTERNAL TABLE IF NOT EXISTS water_quality_clean (
     water_quality_label   STRING
 )
 ROW FORMAT DELIMITED
-    FIELDS TERMINATED BY ','
+    FIELDS TERMINATED BY '|'
 STORED AS TEXTFILE
 LOCATION '/data/clean/water_quality_clean';
 
@@ -70,7 +70,7 @@ CREATE EXTERNAL TABLE IF NOT EXISTS water_quality_enriched (
     standards_violation_count INT
 )
 ROW FORMAT DELIMITED
-    FIELDS TERMINATED BY ','
+    FIELDS TERMINATED BY '|'
 STORED AS TEXTFILE
 LOCATION '/data/clean/water_quality_enriched';
 

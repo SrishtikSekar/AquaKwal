@@ -1,0 +1,6 @@
+ARG SPARK_BASE
+FROM ${SPARK_BASE}
+
+# PySpark ML imports NumPy on the driver, and keeping it on workers makes the
+# image safe for Python transformations added later.
+RUN apk add --no-cache py3-numpy

@@ -4,11 +4,14 @@
 -- Purpose: Clean Indian water quality monitoring data (CPCB format).
 --          Handles categorical variables, missing values, derives water quality label.
 --
--- Input:  HDFS /data/raw/Indian_water_data.csv
+-- Input:  HDFS /data/raw/Indian_water_data_pipe.csv
 -- Output: HDFS /data/clean/water_quality_clean
 -- ============================================================================
 
-raw_data = LOAD '/data/raw/Indian_water_data_pipe.csv'
+%default INPUT '/data/raw/Indian_water_data_pipe.csv'
+%default CLEAN_OUTPUT '/data/clean/water_quality_clean'
+
+raw_data = LOAD '$INPUT'
     USING PigStorage('|')
     AS (
         stn_code:chararray,
@@ -151,4 +154,6 @@ labeled = FOREACH imputed GENERATE
 -- Deduplicate
 deduped = DISTINCT labeled;
 
-STORE deduped INTO '/data/clean/water_quality_clean' USING PigStorage(',');
+-- Keep a pipe delimiter end-to-end. Monitoring locations frequently contain
+-- commas, so comma-delimited intermediate output would shift downstream fields.
+STORE deduped INTO '$CLEAN_OUTPUT' USING PigStorage('|');

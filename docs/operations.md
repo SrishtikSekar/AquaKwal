@@ -1,5 +1,9 @@
 # Operations Guide — AquaKwal Pipeline
 
+> **Legacy draft:** this file still describes the retired Kaggle schema. Use
+> the root `README.md` for current CPCB run instructions and `docs/testing.md`
+> for verified commands/results.
+
 Detailed instructions for environment setup, running each stage, and verifying
 that data flows correctly between tools.
 

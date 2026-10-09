@@ -1,4 +1,9 @@
 # AquaKwal: Large-Scale Water Quality Analytics & Pattern Discovery
+
+> **Historical snapshot:** the numerical results in this file could not be
+> revalidated because the source CSV is absent from this checkout. Verified
+> test evidence and current run instructions are in `docs/testing.md` and
+> `README.md`.
 ## End-to-End Big Data Pipeline using HDFS, Apache Pig, Apache Hive, and Apache Spark MLlib
 
 ---

@@ -1,0 +1,14 @@
+FROM bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+
+ARG PIG_VERSION=0.17.0
+
+RUN set -eux; \
+    pig_url="https://dlcdn.apache.org/pig/pig-${PIG_VERSION}/pig-${PIG_VERSION}.tar.gz"; \
+    curl -fsSL --retry 5 --connect-timeout 30 \
+      "$pig_url" -o /tmp/pig.tar.gz; \
+    tar -xzf /tmp/pig.tar.gz -C /opt; \
+    ln -s "/opt/pig-${PIG_VERSION}" /opt/pig; \
+    rm /tmp/pig.tar.gz
+
+ENV PIG_HOME=/opt/pig
+ENV PATH=/opt/pig/bin:/opt/hadoop-3.2.1/bin:/opt/hadoop-3.2.1/sbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
